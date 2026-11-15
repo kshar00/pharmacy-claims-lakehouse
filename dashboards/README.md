@@ -2,6 +2,8 @@
 
 A two-page **Databricks AI/BI dashboard** on the gold layer, running on the Free Edition **Serverless Starter Warehouse** (2X-Small).
 
+**[See the published dashboard (PDF, both pages)](dashboard.pdf)**
+
 | Page | Question it answers | Built on |
 |---|---|---|
 | **1. Spend & utilisation** | Where is the money going, and how much do members use? | `gold.drug_spend_monthly`, `gold.top_drugs`, `gold.utilisation` |

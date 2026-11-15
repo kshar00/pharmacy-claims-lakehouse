@@ -98,7 +98,9 @@ Full details, including the data quality gates and orchestration: [docs/architec
 
 ## Dashboard
 
-Two pages on the gold layer. **Spend & utilisation** tells the business story; **Rebates & data trust** shows why the numbers can be trusted, with rejects by reason, data quality results and the pipeline audit. Ratios are computed in SQL, never averaged in a widget. See [dashboards/README.md](dashboards/README.md).
+Two pages on the gold layer. **Spend & utilisation** tells the business story; **Rebates & data trust** shows why the numbers can be trusted, with rejects by reason, data quality results and the pipeline audit. Ratios are computed in SQL, never averaged in a widget.
+
+**[See the published dashboard (PDF, both pages)](dashboards/dashboard.pdf)** · how it was built: [dashboards/README.md](dashboards/README.md)
 
 ---
 
