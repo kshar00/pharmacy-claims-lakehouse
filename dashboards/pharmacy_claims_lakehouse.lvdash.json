@@ -1,0 +1,1725 @@
+{
+  "datasets": [
+    {
+      "name": "865aebb5",
+      "displayName": "kpi_headline",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: kpi_headline\r\n-- One row of whole-book headline numbers. Feeds the counter tiles on both dashboard pages.\r\n--\r\n-- Why one pre-computed row: ratios (specialty share, PMPM, claims per 1,000) must be \"sum of the\r\n-- numerator ÷ sum of the denominator\". Averaging monthly or per-plan ratios in a widget would give the\r\n-- wrong answer, so the ratios are computed here in SQL, once, and the tiles just display them.\r\n-- Money is shown in $M (rounded) so the tiles need no number formatting.\r\n\r\nWITH spend AS (\r\n  SELECT\r\n    sum(claim_count)                                                AS claims,\r\n    sum(gross_cost)                                                 AS gross_cost,\r\n    sum(plan_paid)                                                  AS plan_paid,\r\n    sum(CASE WHEN specialty_flag = 'Y' THEN gross_cost  ELSE 0 END) AS specialty_gross_cost,\r\n    sum(CASE WHEN specialty_flag = 'Y' THEN claim_count ELSE 0 END) AS specialty_claims\r\n  FROM portfolio.gold.drug_spend_monthly\r\n),\r\nutil AS (  -- rates use only members we can place in a plan (UNKNOWN_MEMBER has no denominator)\r\n  SELECT\r\n    sum(member_months)                                                      AS member_months,\r\n    sum(CASE WHEN plan_id <> 'UNKNOWN_MEMBER' THEN claims     END)          AS known_claims,\r\n    sum(CASE WHEN plan_id <> 'UNKNOWN_MEMBER' THEN gross_cost END)          AS known_gross_cost\r\n  FROM portfolio.gold.utilisation\r\n),\r\nrebate AS (\r\n  SELECT\r\n    count(*)                                                AS rebate_claims,\r\n    sum(estimated_rebate)                                   AS estimated_rebate,\r\n    sum(estimated_rebate_if_stacked - estimated_rebate)     AS double_count_avoided\r\n  FROM portfolio.gold.rebate_eligible_claims\r\n),\r\nrejects AS (\r\n  SELECT\r\n    count(*)                                                                    AS rejected_claims,\r\n    sum(CASE WHEN reason_code = 'NDC_NOT_IN_REFERENCE' THEN plan_paid END)      AS unmapped_ndc_plan_paid\r\n  FROM portfolio.silver.claims_rejected\r\n)\r\nSELECT\r\n  s.claims                                                        AS total_claims,\r\n  round(s.gross_cost / 1e6, 1)                                    AS gross_cost_musd,\r\n  round(s.plan_paid  / 1e6, 1)                                    AS plan_paid_musd,\r\n  round(100 * s.specialty_gross_cost / s.gross_cost, 1)           AS specialty_pct_of_spend,\r\n  round(100 * s.specialty_claims / s.claims, 1)                   AS specialty_pct_of_claims,\r\n  u.member_months,\r\n  round(u.known_claims * 12000.0 / u.member_months, 0)            AS claims_per_1000_per_year,\r\n  round(u.known_gross_cost / u.member_months, 2)                  AS gross_cost_pmpm,\r\n  r.rebate_claims,\r\n  round(r.estimated_rebate / 1e6, 2)                              AS estimated_rebate_musd,\r\n  round(r.double_count_avoided / 1e6, 2)                          AS double_count_avoided_musd,\r\n  j.rejected_claims,\r\n  round(j.unmapped_ndc_plan_paid / 1e6, 2)                        AS unmapped_ndc_plan_paid_musd\r\nFROM spend s\r\nCROSS JOIN util u\r\nCROSS JOIN rebate r\r\nCROSS JOIN rejects j\r\n",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "2b2c5436",
+      "displayName": "spend_monthly",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: spend_monthly\r\n-- gold.drug_spend_monthly with readable labels. Feeds the spend trend and therapeutic class charts,\r\n-- and the page filters (date range, therapeutic class, drug type).\r\n--\r\n-- Only additive measures (counts and dollars) are exposed here, so any widget can safely SUM them\r\n-- across months, drugs or classes. About 11.5k rows: small enough for the 2X-Small warehouse.\r\n\r\nSELECT\r\n  fill_month,\r\n  drug_name,\r\n  therapeutic_class,\r\n  CASE specialty_flag     WHEN 'Y' THEN 'Specialty' ELSE 'Traditional' END AS drug_type,\r\n  CASE brand_generic_flag WHEN 'B' THEN 'Brand'     ELSE 'Generic'     END AS brand_generic,\r\n  manufacturer,\r\n  claim_count,\r\n  total_days_supply,\r\n  gross_cost,\r\n  member_copay,\r\n  plan_paid,\r\n  claims_outside_eligibility,\r\n  plan_paid_outside_eligibility\r\nFROM portfolio.gold.drug_spend_monthly",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "e4357c11",
+      "displayName": "top_drugs",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: top_drugs\r\n-- Top 10 drugs by gross cost in the latest fill year, from the gold.top_drugs view.\r\n-- cost_per_claim makes the specialty story obvious: a few hundred claims of a $18k drug outspend\r\n-- ten thousand claims of a $600 drug.\r\n\r\nSELECT\r\n  rank_by_spend                                                  AS spend_rank,\r\n  drug_name,\r\n  therapeutic_class,\r\n  CASE specialty_flag     WHEN 'Y' THEN 'Specialty' ELSE 'Traditional' END AS drug_type,\r\n  CASE brand_generic_flag WHEN 'B' THEN 'Brand'     ELSE 'Generic'     END AS brand_generic,\r\n  claims,\r\n  round(gross_cost / 1e6, 2)                                     AS gross_cost_musd,\r\n  round(gross_cost / claims, 0)                                  AS cost_per_claim,\r\n  fill_year\r\nFROM portfolio.gold.top_drugs\r\nWHERE fill_year = (SELECT max(fill_year) FROM portfolio.gold.top_drugs)\r\n  AND rank_by_spend <= 10\r\nORDER BY spend_rank",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "7aea4fe3",
+      "displayName": "utilisation_monthly",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: utilisation_monthly\r\n-- Whole-book utilisation per month: claims per 1,000 members (annualised) and gross cost PMPM.\r\n--\r\n-- gold.utilisation is month x plan. Rates are re-computed here as sum(numerator) / sum(member_months)\r\n-- for each month, never averaged. Claims for members missing from the member file (UNKNOWN_MEMBER)\r\n-- have no member-months, so they are left out of the rates (but still counted in total_claims).\r\n\r\nSELECT\r\n  fill_month,\r\n  sum(member_months)                                                                         AS member_months,\r\n  sum(claims)                                                                                AS total_claims,\r\n  round(sum(CASE WHEN plan_id <> 'UNKNOWN_MEMBER' THEN claims END) * 12000.0\r\n        / sum(member_months), 0)                                                             AS claims_per_1000_per_year,\r\n  round(sum(CASE WHEN plan_id <> 'UNKNOWN_MEMBER' THEN gross_cost END) / sum(member_months), 2) AS gross_cost_pmpm,\r\n  round(sum(days_supply) / sum(claims), 1)                                                   AS avg_days_supply\r\nFROM portfolio.gold.utilisation\r\nGROUP BY fill_month\r\nORDER BY fill_month",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "f820584f",
+      "displayName": "utilisation_by_plan",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: utilisation_by_plan\r\n-- Whole-period utilisation per plan, for comparing plans side by side.\r\n-- Same rule as utilisation_monthly: ratio of sums, never an average of monthly rates.\r\n\r\nSELECT\r\n  plan_id,\r\n  sum(member_months)                                                  AS member_months,\r\n  sum(claims)                                                         AS total_claims,\r\n  round(sum(claims) * 12000.0 / sum(member_months), 0)                AS claims_per_1000_per_year,\r\n  round(sum(gross_cost) / sum(member_months), 2)                      AS gross_cost_pmpm,\r\n  round(100 * sum(specialty_gross_cost) / sum(gross_cost), 1)         AS specialty_pct_of_spend\r\nFROM portfolio.gold.utilisation\r\nWHERE plan_id <> 'UNKNOWN_MEMBER'\r\nGROUP BY plan_id\r\nORDER BY plan_id",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "93592838",
+      "displayName": "rebates_monthly",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: rebates_monthly\r\n-- Estimated rebate per month, by contract level and manufacturer, from gold.rebate_eligible_claims.\r\n-- double_count_avoided = what a naive join that stacked every matching contract would have\r\n-- over-reported. It shows why the one-contract-per-claim precedence rule matters.\r\n\r\nSELECT\r\n  fill_month,\r\n  CASE contract_grain WHEN 'NDC' THEN 'NDC-level contract' ELSE 'Class-level contract' END AS contract_level,\r\n  manufacturer,\r\n  therapeutic_class,\r\n  count(*)                                              AS rebate_claims,\r\n  sum(ingredient_cost)                                  AS ingredient_cost,\r\n  sum(estimated_rebate)                                 AS estimated_rebate,\r\n  sum(estimated_rebate_if_stacked - estimated_rebate)   AS double_count_avoided\r\nFROM portfolio.gold.rebate_eligible_claims\r\nGROUP BY ALL\r\n",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "4b1071ad",
+      "displayName": "rejected_claims",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: rejected_claims\r\n-- Claim rows silver could not use, by reason. NDC_NOT_IN_REFERENCE is the \"rebate leakage\" story:\r\n-- claims for real-looking NDCs that are missing from the drug file can't be matched to a rebate\r\n-- contract, so any rebate on them is never invoiced.\r\n-- Reads a silver table on purpose: claims_rejected is already a small, curated exceptions table.\r\n\r\nSELECT\r\n  reason_code,\r\n  CASE reason_code\r\n    WHEN 'INVALID_NDC_FORMAT'     THEN 'NDC cannot be parsed to 11 digits'\r\n    WHEN 'NDC_NOT_IN_REFERENCE'   THEN 'Valid NDC, missing from drug file'\r\n    WHEN 'ORPHAN_REVERSAL'        THEN 'Reversal of a claim never received'\r\n    WHEN 'MISSING_REQUIRED_FIELD' THEN 'Required field is blank'\r\n    ELSE reason_code\r\n  END                                     AS reason,\r\n  count(*)                                AS rejected_claims,\r\n  round(sum(plan_paid), 2)                AS plan_paid\r\nFROM portfolio.silver.claims_rejected\r\nGROUP BY reason_code\r\nORDER BY rejected_claims DESC",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "3a84b7d7",
+      "displayName": "dq_latest",
+      "config": {
+        "version": "1.1",
+        "source": "-- Dataset: dq_latest\r\n-- The 34 data quality checks from the most recent pipeline run (silver.dq_results_latest view).\r\n-- Sorted so anything that is not PASS shows first in the table widget.\r\n\r\nSELECT\r\n  check_id,\r\n  category,\r\n  table_name,\r\n  check_name,\r\n  severity,\r\n  status,\r\n  failed_rows,\r\n  total_rows,\r\n  round(failed_pct, 2)    AS failed_pct,\r\n  max_failed_pct          AS tolerance_pct,\r\n  run_id,\r\n  run_ts\r\nFROM portfolio.silver.dq_results_latest\r\nORDER BY CASE status WHEN 'FAIL' THEN 1 WHEN 'WARN' THEN 2 ELSE 3 END, check_id",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    },
+    {
+      "name": "fb056f61",
+      "displayName": "pipeline_audit_latest",
+      "config": {
+        "version": "1.1",
+        "source": "  -- Dataset: pipeline_audit_latest\r\n-- Row counts and plan-paid dollars per layer for the most recent pipeline run, landing -> gold.\r\n-- Lets a viewer see that the dashboard's numbers trace back to the files that were received.\r\n\r\nSELECT\r\n  CASE layer WHEN 'landing' THEN 1 WHEN 'bronze' THEN 2 WHEN 'silver' THEN 3 ELSE 4 END AS step,\r\n  layer,\r\n  table_name,\r\n  row_count,\r\n  plan_paid,\r\n  note,\r\n  run_id,\r\n  audited_at\r\nFROM portfolio.gold.pipeline_audit\r\nWHERE run_id = (SELECT max_by(run_id, audited_at) FROM portfolio.gold.pipeline_audit)\r\nORDER BY step, table_name",
+        "dimensions": [
+          {
+            "expr": "source.*"
+          }
+        ],
+        "measures": [
+          {
+            "name": "count",
+            "expr": "COUNT(*)",
+            "comment": "Represents the total number of rows in the dataset. Use this measure to count all",
+            "displayName": "Count"
+          }
+        ]
+      }
+    }
+  ],
+  "pages": [
+    {
+      "name": "67c23468",
+      "displayName": "Spend & Utilization",
+      "layout": [
+        {
+          "widget": {
+            "name": "filter_fill_month",
+            "queries": [
+              {
+                "name": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_fill_month",
+                "query": {
+                  "datasetName": "2b2c5436",
+                  "fields": [
+                    {
+                      "name": "fill_month",
+                      "expression": "`fill_month`"
+                    },
+                    {
+                      "name": "fill_month_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f7c3d61328844d2e42f840d53d_fill_month",
+                "query": {
+                  "datasetName": "7aea4fe3",
+                  "fields": [
+                    {
+                      "name": "fill_month",
+                      "expression": "`fill_month`"
+                    },
+                    {
+                      "name": "fill_month_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Fill month"
+              },
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "fill_month",
+                    "queryName": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_fill_month"
+                  },
+                  {
+                    "fieldName": "fill_month",
+                    "queryName": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f7c3d61328844d2e42f840d53d_fill_month"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 5,
+            "y": 0,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_therapeutic_class",
+            "queries": [
+              {
+                "name": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_therapeutic_class",
+                "query": {
+                  "datasetName": "2b2c5436",
+                  "fields": [
+                    {
+                      "name": "therapeutic_class",
+                      "expression": "`therapeutic_class`"
+                    },
+                    {
+                      "name": "therapeutic_class_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Therapeutic class"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "therapeutic_class",
+                    "queryName": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_therapeutic_class"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 0,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "filter_drug_type",
+            "queries": [
+              {
+                "name": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_drug_type",
+                "query": {
+                  "datasetName": "2b2c5436",
+                  "fields": [
+                    {
+                      "name": "drug_type",
+                      "expression": "`drug_type`"
+                    },
+                    {
+                      "name": "drug_type_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "frame": {
+                "showTitle": true,
+                "title": "Drug type"
+              },
+              "widgetType": "filter-multi-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "drug_type",
+                    "queryName": "dashboards/01f1e0f6c69a1a4d9d325f6198a1a024/datasets/01f1e0f798201f1998b09f5c8a908d87_drug_type"
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 0,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_total_claims",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(total_claims)",
+                      "expression": "SUM(`total_claims`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Final paid claims"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(total_claims)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_gross_cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(gross_cost_musd)",
+                      "expression": "SUM(`gross_cost_musd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Gross cost ($M)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(gross_cost_musd)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_specialty_spend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(specialty_pct_of_spend)",
+                      "expression": "SUM(`specialty_pct_of_spend`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Specialty % of spend"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(specialty_pct_of_spend)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_specialty_claims",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(specialty_pct_of_claims)",
+                      "expression": "SUM(`specialty_pct_of_claims`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Specialty % of claims"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(specialty_pct_of_claims)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_pmpm",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(gross_cost_pmpm)",
+                      "expression": "SUM(`gross_cost_pmpm`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Gross cost PMPM ($)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(gross_cost_pmpm)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_claims_per_1000",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(claims_per_1000_per_year)",
+                      "expression": "SUM(`claims_per_1000_per_year`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Claims per 1,000 members / yr"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(claims_per_1000_per_year)"
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_monthly_gross_cost_area",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2b2c5436",
+                  "fields": [
+                    {
+                      "name": "drug_type",
+                      "expression": "`drug_type`"
+                    },
+                    {
+                      "name": "monthly(fill_month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `fill_month`)"
+                    },
+                    {
+                      "name": "sum(gross_cost)",
+                      "expression": "SUM(`gross_cost`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Monthly gross cost: specialty vs traditional"
+              },
+              "version": 3,
+              "widgetType": "area",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(fill_month)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(gross_cost)",
+                  "displayName": "Gross cost ($)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "drug_type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 12,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_gross_cost_by_class",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2b2c5436",
+                  "fields": [
+                    {
+                      "name": "drug_type",
+                      "expression": "`drug_type`"
+                    },
+                    {
+                      "name": "therapeutic_class",
+                      "expression": "`therapeutic_class`"
+                    },
+                    {
+                      "name": "sum(gross_cost)",
+                      "expression": "SUM(`gross_cost`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Gross cost by therapeutic class"
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "therapeutic_class",
+                  "axis": {
+                    "labelAngle": 45
+                  },
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "y-reversed"
+                    }
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(gross_cost)",
+                  "displayName": "Gross cost ($)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "drug_type",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "table_top_drugs",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "e4357c11",
+                  "fields": [
+                    {
+                      "name": "spend_rank",
+                      "expression": "`spend_rank`"
+                    },
+                    {
+                      "name": "drug_name",
+                      "expression": "`drug_name`"
+                    },
+                    {
+                      "name": "therapeutic_class",
+                      "expression": "`therapeutic_class`"
+                    },
+                    {
+                      "name": "drug_type",
+                      "expression": "`drug_type`"
+                    },
+                    {
+                      "name": "claims",
+                      "expression": "`claims`"
+                    },
+                    {
+                      "name": "gross_cost_musd",
+                      "expression": "`gross_cost_musd`"
+                    },
+                    {
+                      "name": "cost_per_claim",
+                      "expression": "`cost_per_claim`"
+                    }
+                  ],
+                  "disaggregated": true,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`spend_rank`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Top 10 drugs by spend, latest year"
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "spend_rank",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Rank"
+                  },
+                  {
+                    "fieldName": "drug_name",
+                    "displayName": "Drug"
+                  },
+                  {
+                    "fieldName": "therapeutic_class",
+                    "displayName": "Therapeutic class"
+                  },
+                  {
+                    "fieldName": "drug_type",
+                    "displayName": "Type"
+                  },
+                  {
+                    "fieldName": "claims",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Claims"
+                  },
+                  {
+                    "fieldName": "gross_cost_musd",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Gross cost ($M)"
+                  },
+                  {
+                    "fieldName": "cost_per_claim",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Cost per claim ($)"
+                  }
+                ],
+                "rowOrder": [
+                  {
+                    "by": "column",
+                    "field": {
+                      "index": 0
+                    }
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 11,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_pmpm_line",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "7aea4fe3",
+                  "fields": [
+                    {
+                      "name": "monthly(fill_month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `fill_month`)"
+                    },
+                    {
+                      "name": "sum(gross_cost_pmpm)",
+                      "expression": "SUM(`gross_cost_pmpm`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Gross cost PMPM by month"
+              },
+              "version": 3,
+              "widgetType": "line",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(fill_month)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(gross_cost_pmpm)",
+                  "displayName": "Gross cost PMPM ($)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 17,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_pmpm_by_plan",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "f820584f",
+                  "fields": [
+                    {
+                      "name": "plan_id",
+                      "expression": "`plan_id`"
+                    },
+                    {
+                      "name": "sum(gross_cost_pmpm)",
+                      "expression": "SUM(`gross_cost_pmpm`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Gross cost PMPM by plan"
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "plan_id",
+                  "axis": {
+                    "labelAngle": 45
+                  },
+                  "scale": {
+                    "type": "categorical"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(gross_cost_pmpm)",
+                  "displayName": "Gross cost PMPM ($)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 17,
+            "width": 6,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "header_text",
+            "spec": {
+              "version": 1,
+              "widgetType": "text",
+              "encodings": {
+                "text": {
+                  "fields": [],
+                  "lines": [
+                    "## Pharmacy Claims Lakehouse\n",
+                    "\n",
+                    "Synthetic PBM claims, Jan 2024 – Dec 2025 · medallion pipeline on Databricks Free Edition · gold layer. Tiles show whole-book totals; the filters apply to the charts.\n"
+                  ]
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 5,
+            "height": 3
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "rebates_trust",
+      "displayName": "Rebates & data trust",
+      "layout": [
+        {
+          "widget": {
+            "name": "header_text",
+            "spec": {
+              "version": 1,
+              "widgetType": "text",
+              "encodings": {
+                "text": {
+                  "fields": [],
+                  "lines": [
+                    "## Rebates & data trust\n",
+                    "\n",
+                    "Rebate = ingredient cost × contract % (one contract per claim: NDC-level beats class-level). Every number on this dashboard reconciles to silver; data quality checks run on every pipeline run.\n"
+                  ]
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_estimated_rebate",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(estimated_rebate_musd)",
+                      "expression": "SUM(`estimated_rebate_musd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Estimated rebate ($M)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(estimated_rebate_musd)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_rebate_claims",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(rebate_claims)",
+                      "expression": "SUM(`rebate_claims`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Rebate-eligible claims"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(rebate_claims)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_double_count",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(double_count_avoided_musd)",
+                      "expression": "SUM(`double_count_avoided_musd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Double count avoided ($M)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(double_count_avoided_musd)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_unmapped_ndc",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(unmapped_ndc_plan_paid_musd)",
+                      "expression": "SUM(`unmapped_ndc_plan_paid_musd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Plan paid on unmapped NDCs ($M)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(unmapped_ndc_plan_paid_musd)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_rejected_rows",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(rejected_claims)",
+                      "expression": "SUM(`rejected_claims`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Rejected claim rows"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(rejected_claims)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "counter_plan_paid",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "865aebb5",
+                  "fields": [
+                    {
+                      "name": "sum(plan_paid_musd)",
+                      "expression": "SUM(`plan_paid_musd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Plan paid ($M)"
+              },
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(plan_paid_musd)",
+                  "format": {
+                    "abbreviation": "compact",
+                    "decimalPlaces": {
+                      "places": 1,
+                      "type": "max"
+                    },
+                    "type": "number-plain"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 10,
+            "y": 3,
+            "width": 2,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_rebate_by_month",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "93592838",
+                  "fields": [
+                    {
+                      "name": "contract_level",
+                      "expression": "`contract_level`"
+                    },
+                    {
+                      "name": "monthly(fill_month)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `fill_month`)"
+                    },
+                    {
+                      "name": "sum(estimated_rebate)",
+                      "expression": "SUM(`estimated_rebate`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Estimated rebate by month"
+              },
+              "version": 3,
+              "mark": {
+                "layout": "stack"
+              },
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(fill_month)",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(estimated_rebate)",
+                  "displayName": "Estimated rebate ($)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "contract_level",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "chart_rejected_by_reason",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "4b1071ad",
+                  "fields": [
+                    {
+                      "name": "sum(rejected_claims)",
+                      "expression": "SUM(`rejected_claims`)"
+                    },
+                    {
+                      "name": "reason",
+                      "expression": "`reason`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Rejected claims by reason"
+              },
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "sum(rejected_claims)",
+                  "displayName": "Rejected claims",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "y": {
+                  "fieldName": "reason",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "pie_dq_status",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "3a84b7d7",
+                  "fields": [
+                    {
+                      "name": "count(*)",
+                      "expression": "COUNT(`*`)"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Data quality checks, latest run"
+              },
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "angle": {
+                  "fieldName": "count(*)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "displayName": "Checks"
+                },
+                "color": {
+                  "fieldName": "status",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 6,
+            "width": 3,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "table_pipeline_audit",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "fb056f61",
+                  "fields": [
+                    {
+                      "name": "layer",
+                      "expression": "`layer`"
+                    },
+                    {
+                      "name": "table_name",
+                      "expression": "`table_name`"
+                    },
+                    {
+                      "name": "row_count",
+                      "expression": "`row_count`"
+                    },
+                    {
+                      "name": "plan_paid",
+                      "expression": "`plan_paid`"
+                    },
+                    {
+                      "name": "note",
+                      "expression": "`note`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Pipeline audit, latest run"
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "layer",
+                    "displayName": "Layer"
+                  },
+                  {
+                    "fieldName": "table_name",
+                    "displayName": "Table"
+                  },
+                  {
+                    "fieldName": "row_count",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Rows"
+                  },
+                  {
+                    "fieldName": "plan_paid",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Plan paid ($)"
+                  },
+                  {
+                    "fieldName": "note",
+                    "displayName": "Note"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 12,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "table_dq_checks",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "3a84b7d7",
+                  "fields": [
+                    {
+                      "name": "check_id",
+                      "expression": "`check_id`"
+                    },
+                    {
+                      "name": "category",
+                      "expression": "`category`"
+                    },
+                    {
+                      "name": "check_name",
+                      "expression": "`check_name`"
+                    },
+                    {
+                      "name": "severity",
+                      "expression": "`severity`"
+                    },
+                    {
+                      "name": "status",
+                      "expression": "`status`"
+                    },
+                    {
+                      "name": "failed_rows",
+                      "expression": "`failed_rows`"
+                    },
+                    {
+                      "name": "total_rows",
+                      "expression": "`total_rows`"
+                    },
+                    {
+                      "name": "failed_pct",
+                      "expression": "`failed_pct`"
+                    },
+                    {
+                      "name": "tolerance_pct",
+                      "expression": "`tolerance_pct`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "frame": {
+                "showTitle": true,
+                "title": "Data quality checks (non-PASS first)"
+              },
+              "version": 2,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "check_id",
+                    "displayName": "Check"
+                  },
+                  {
+                    "fieldName": "category",
+                    "displayName": "Category"
+                  },
+                  {
+                    "fieldName": "check_name",
+                    "displayName": "Check name"
+                  },
+                  {
+                    "fieldName": "severity",
+                    "displayName": "Severity"
+                  },
+                  {
+                    "fieldName": "status",
+                    "displayName": "Status"
+                  },
+                  {
+                    "fieldName": "failed_rows",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Failed rows"
+                  },
+                  {
+                    "fieldName": "total_rows",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Total rows"
+                  },
+                  {
+                    "fieldName": "failed_pct",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Failed %"
+                  },
+                  {
+                    "fieldName": "tolerance_pct",
+                    "contentAlignment": "right",
+                    "headerAlignment": "right",
+                    "displayName": "Tolerance %"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 18,
+            "width": 12,
+            "height": 8
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
