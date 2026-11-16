@@ -1,0 +1,4 @@
+# Local and CI test dependencies (not needed in Databricks, where numpy and pandas are preinstalled).
+numpy>=1.26
+pandas>=2.1
+pytest>=8.0

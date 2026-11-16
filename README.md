@@ -129,6 +129,8 @@ You need a free [Databricks Free Edition](https://www.databricks.com/learn/free-
 
 You can also run the notebooks one by one, in order, from `notebooks/`. Each notebook ends with checks that show PASS or FAIL.
 
+**Tests without Databricks:** `pip install -r requirements-dev.txt`, then `pytest tests`. They test the generator's helper functions (NPI check digits, delivery labels, configuration) and check that the job, notebooks, dashboard export and docs still agree with each other. GitHub Actions runs them on every push.
+
 ---
 
 ## Repository
@@ -151,6 +153,8 @@ docs/
   architecture.md                 how it works
   design_decisions.md             54 design decisions and why (D1–D54)
   insights.md                     what the gold layer shows
+tests/                            pytest suite, run by GitHub Actions on every push
+BACKLOG.md                        planned improvements
 ```
 
 ---

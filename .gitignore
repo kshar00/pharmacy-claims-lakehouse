@@ -17,3 +17,4 @@ landing/
 
 # Local Claude Code settings
 .claude/
+.pytest_cache/
